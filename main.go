@@ -64,7 +64,13 @@ func main () {
 		javaPath = "/usr/bin/java"
 	}
 
+	port := os.Getenv("GCCAPIPORT")
+
+	if port == "" {
+		port = ":7000"
+	}
+
 	http.Handle("/compress", &CompressHandler{javaPath})
-	log.Print("Started server.")
-	log.Fatal(http.ListenAndServe(":7000", nil))
+	log.Printf("Started server on port %s.", port)
+	log.Fatal(http.ListenAndServe(port, nil))
 }
