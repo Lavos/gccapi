@@ -25,7 +25,7 @@ func (c *CompressHandler) ServeHTTP (rep http.ResponseWriter, req *http.Request)
 
 	if err != nil {
 		log.Print("Could not create pipes.")
-		http.Error(rep, "Could not open connection to pipes.", 500)
+		rep.Write([]byte("Error: Could not open connection to pipes."))
 		return
 	}
 
@@ -36,7 +36,7 @@ func (c *CompressHandler) ServeHTTP (rep http.ResponseWriter, req *http.Request)
 
 	if err != nil {
 		log.Print("Could not start compiler.")
-		http.Error(rep, "Could not start compiler.", 500)
+		rep.Write([]byte("Error: Could not start compiler."))
 		return
 	}
 
@@ -50,7 +50,7 @@ func (c *CompressHandler) ServeHTTP (rep http.ResponseWriter, req *http.Request)
 	if err != nil {
 		log.Print("Compiler barfed.")
 		// log.Print(stderr.String())
-		http.Error(rep, "Compiler exited.", 500)
+		rep.Write([]byte("Error: Compiler exited. Check your syntax and try again."))
 		return
 	}
 
