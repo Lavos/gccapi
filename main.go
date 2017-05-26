@@ -5,72 +5,126 @@ import (
 	"log"
 	"io"
 	"net/http"
-	// "bytes"
 	"os"
+	"os/signal"
+	"context"
+	"encoding/json"
+	"bytes"
+	"time"
+	"fmt"
+
+	"github.com/kelseyhightower/envconfig"
 )
 
-type CompressHandler struct {
-	JavaPath string
+type Configuration struct {
+	JavaPath string `default:"/usr/bin/java"`
+	JarPath string `default:"./closure-compiler.jar"`
+	Port int64 `default:"9000"`
 }
 
-func (c *CompressHandler) ServeHTTP (rep http.ResponseWriter, req *http.Request) {
+var (
+	c Configuration
+)
+
+type ErrorResponse struct {
+	ErrorMessage string `json:"error_message"`
+	CompilerBody string `json:"compiler_body,omitempty"`
+}
+
+func ServeHTTP (w http.ResponseWriter, req *http.Request) {
+	log.Printf("%#v", req)
+
+	start := time.Now()
+
 	log.Print("Running command.")
-	cmd := exec.Command(c.JavaPath, "-jar", "compiler.jar", "-W", "QUIET")
+	cmd := exec.Command(c.JavaPath, "-jar", c.JarPath, "-W", "QUIET", "--compilation_level", "SIMPLE_OPTIMIZATIONS")
 
 	in, err := cmd.StdinPipe()
 	out, err := cmd.StdoutPipe()
-
-	/* var stderr bytes.Buffer
-	cmd.Stderr = &stderr */
+	errout, err := cmd.StderrPipe()
 
 	if err != nil {
-		log.Print("Could not create pipes.")
-		rep.Write([]byte("Error: Could not open connection to pipes."))
+		SendErrorResponse(w, http.StatusInternalServerError, ErrorResponse{
+			ErrorMessage: "Could not create command pipes.",
+		})
+
 		return
 	}
 
 	defer in.Close()
 	defer out.Close()
+	defer errout.Close()
 
 	err = cmd.Start()
 
 	if err != nil {
-		log.Print("Could not start compiler.")
-		rep.Write([]byte("Error: Could not start compiler."))
+		SendErrorResponse(w, http.StatusInternalServerError, ErrorResponse{
+			ErrorMessage: "Could not start command.",
+		})
+
 		return
 	}
+
+	stdbuf := new(bytes.Buffer)
+	errbuf := new(bytes.Buffer)
 
 	io.Copy(in, req.Body)
 	in.Close()
 
-	io.Copy(rep, out)
+	go func(){
+		io.Copy(stdbuf, out)
+	}()
+
+	go func(){
+		io.Copy(errbuf, errout)
+	}()
 
 	err = cmd.Wait()
 
 	if err != nil {
-		log.Print("Compiler barfed.")
-		// log.Print(stderr.String())
-		rep.Write([]byte("Error: Compiler exited. Check your syntax and try again."))
+		SendErrorResponse(w, http.StatusBadRequest, ErrorResponse{
+			ErrorMessage: "Compiler error.",
+			CompilerBody: errbuf.String(),
+		})
+
 		return
 	}
 
-	log.Print("Successfully responded.")
+	w.Header().Set("Content-Type", "text/javascript")
+	w.Header().Set("Compile-Time", fmt.Sprintf("%s", time.Now().Sub(start)))
+	w.WriteHeader(http.StatusOK)
+	stdbuf.WriteTo(w)
+}
+
+func SendErrorResponse(w http.ResponseWriter, statusCode int, er ErrorResponse) {
+	log.Print("%#v", er)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusInternalServerError)
+
+	json.NewEncoder(w).Encode(er)
 }
 
 func main () {
-	javaPath := os.Getenv("JAVAPATH")
+	envconfig.MustProcess("GCCAPI", &c)
+	log.Printf("%#v", c)
 
-	if javaPath == "" {
-		javaPath = "/usr/bin/java"
+	s := &http.Server{
+		Addr:           fmt.Sprintf(":%d", c.Port),
+		Handler:        http.HandlerFunc(ServeHTTP),
 	}
 
-	port := os.Getenv("GCCAPIPORT")
+	go func(){
+		err := s.ListenAndServe()
+		log.Fatal(err)
+	}()
 
-	if port == "" {
-		port = ":7000"
-	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
 
-	http.Handle("/compress", &CompressHandler{javaPath})
-	log.Printf("Started server on port %s.", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+	// Block until a signal is received.
+	log.Printf("Got signal %s, shutting down.\n", <-sig)
+
+	s.Shutdown(context.TODO())
+
+	log.Printf("Server shutdown successful.")
 }
